@@ -1,0 +1,171 @@
+# MIUICamera (dash) - vendor-side grants for the AOSP port.
+#
+# On this platform the camera runs as priv_app and talks to mtk_hal_camera
+# (not hal_camera_default). Every rule below was proven live (Enforcing,
+# user build constraints) via the KernelSU module sepolicy.rule before
+# being ported here into build-time macro form.
+#
+# Deliberately NOT ported from the module (user-build neverallow breakers):
+# - allow priv_app vendor_default_prop:file read
+#     -> neverallow base_typeattr_234 (= coredomain): use the labeled
+#        vendor_mtk_camera_prop instead.
+# - allow mtk_hal_camera default_prop:file read
+#     -> neverallow base_typeattr_232 (= non-coredomain): omitted, the HAL
+#        property poll falls back to defaults. Revisit only with the exact
+#        prop name + a labeled type if a feature proves to need it.
+# - allow priv_app default_android_service:service_manager find
+#     (IMiSysImpl lookup) -> blanket neverallow base_typeattr_242 (= all):
+#     the lookup failure is tolerated (no app logging, photo path proven
+#     without it). Proper fix needs a service_contexts label plus the
+#     provider's add grant once the provider domain is identified.
+# Deliberately NOT duplicated (already in device policy):
+# - allow mtk_hal_camera system_data_file:dir search
+# - mtk_hal_camera proc_pressure_mem access
+# - mtk_hal_camera sysfs_therm read (r_dir_file; write below is the addition)
+
+# priv_app <-> mtk_hal_camera binder IPC (preview/capture sessions, fd handoff)
+allow priv_app mtk_hal_camera:binder { call transfer };
+allow mtk_hal_camera priv_app:binder { call transfer };
+allow priv_app mtk_hal_camera:fd use;
+allow mtk_hal_camera priv_app:fd use;
+
+# platform_app mirror of the above (app identity may be platform_app;
+# priv_app originals kept, grants are additive). Binder app->hal was audited
+# neverallow-clean (no appdomain/hal binder neverallows in plat policy).
+allow platform_app mtk_hal_camera:binder { call transfer };
+allow mtk_hal_camera platform_app:binder { call transfer };
+allow platform_app mtk_hal_camera:fd use;
+allow mtk_hal_camera platform_app:fd use;
+
+# mtk_hal_camera graphics property reads (observed Enforcing denials)
+get_prop(mtk_hal_camera, graphics_config_prop)
+get_prop(mtk_hal_camera, graphics_config_writable_prop)
+
+# Xiaomi camera property block readers (persist.vendor.camera.*,
+# vendor.camera.* -> vendor_mtk_camera_prop in device policy, which ships
+# the label with zero reader grants). HAL reads OIS/dualcal/module keys.
+# get_prop(platform_app, ...) above does NOT cover the per-targetSdk variants
+# this AOSP assigns (platform_app_36 observed live, denials for both
+# vendor_mtk_camera_prop and vendor_persist_camera_prop). appdomain is a public
+# attribute (system/sepolicy/public/attributes) so vendor policy may grant it.
+# Untrusted apps gaining find/read on these is equivalent to stock, which
+# ships persist.vendor.camera.privapp.list for them.
+get_prop(mtk_hal_camera, vendor_mtk_camera_prop)
+get_prop(cameraserver, vendor_mtk_camera_prop)
+get_prop(priv_app, vendor_mtk_camera_prop)
+get_prop(platform_app, vendor_mtk_camera_prop)
+get_prop(appdomain, vendor_mtk_camera_prop)
+
+get_prop(cameraserver, vendor_persist_camera_prop)
+get_prop(priv_app, vendor_persist_camera_prop)
+get_prop(platform_app, vendor_persist_camera_prop)
+get_prop(appdomain, vendor_persist_camera_prop)
+
+# mtk_hal_camera torch_real_level write + board temp reads under sysfs_therm
+# (device policy grants read; write is the port addition)
+allow mtk_hal_camera sysfs_therm:file write;
+
+# mtk_hal_camera DMA_BUF_SYNC for full-res still post-processing.
+# Without the xperm, captures stall after quickview in Enforcing
+# (fires during photo post-processing, never for thumbnails).
+allow mtk_hal_camera hal_graphics_allocator_default_tmpfs:file ioctl;
+allowxperm mtk_hal_camera hal_graphics_allocator_default_tmpfs:file ioctl 0x6201;
+
+# mtk_hal_camera /dev/miev (AlgoFwk beauty/AI engine)
+allow mtk_hal_camera miev_dev:chr_file rw_file_perms;
+
+# mtk_hal_camera dmabuf mount statfs during full-res postproc buffer alloc
+allow mtk_hal_camera unlabeled:filesystem getattr;
+
+# Xiaomi MIVI bg-service lookup (the photo dispatch gate). AidlBGServiceClient
+# binds vendor.xiaomi.hardware.aidlbgservice.IBGService and PostProcServiceClient
+# binds vendor.xiaomi.hardware.postprocservice.IPostProcService; both are
+# labeled xiaomi_mivi_service (vendor/service_contexts + vendor/service.te).
+# Without find, getService returns null, miviBgServiceId stays 0 and full-res
+# frames never dispatch (thumbnail-only saves, zero denials). The label is
+# custom so no neverallow can cover it - hal_client_domain on hal_camera_service
+# is NOT an option (drags priv_app into hal_camera attr, trips video_device
+# neverallows). Provider is camerahalserver (mtk_hal_camera domain).
+# priv_app and the per-targetSdk variants this AOSP assigns (platform_app_36
+# observed live). platform_app_36 is its own type, not in the platform_app
+# attribute, so the platform_app grant above does not reach it. Two broader
+# source sets were tried and both were rejected by the neverallow check:
+#   appdomain - isolated_app_all.te:81 lets isolated_app find only four
+#   services, and domain.te:946 restricts { appdomain -coredomain } to
+#   app_api_service / hal_service_type / a fixed exemption list, which the
+#   bare service_manager_type labels (this one, hal_mivimessage_service) are
+#   not in - the non-core app domains (esimswitcher_app, sensorhub_app,
+#   parts_app, ...) tripped it.
+#   coredomain - too wide: it also contains isolated_app itself plus
+#   webview_zygote, native_app_zygote, app_zygote (each has a private neverallow
+#   on service_manager find) and init (neverallow init service_manager_type
+#   service_manager { add find }).
+# So the source set is the explicit platform-signed app types, all public so
+# vendor policy can name them: platform_app, platform_app_36, priv_app,
+# priv_app_36 (public/priv_app.te) and system_app.
+allow priv_app xiaomi_mivi_service:service_manager find;
+allow platform_app xiaomi_mivi_service:service_manager find;
+allow { platform_app_36 priv_app_36 system_app } xiaomi_mivi_service:service_manager find;
+allow mtk_hal_camera xiaomi_mivi_service:service_manager add;
+
+# Xiaomi camera HAL services provided by camerahalserver (mtk_hal_camera).
+# Labels in device/xiaomi/dash/sepolicy/vendor/service.te, service instances
+# in vendor/service_contexts; stock labels mirrored from the stock
+# vendor_sepolicy.cil (hal_mivimessage_service, hal_quickcamera_service,
+# aidlintentaware_service). Observed live at boot:
+# avc: denied { add } ... name=vendor.xiaomi.hardware.camera.mivimessage.IService/default
+# avc: denied { add } ... name=vendor.xiaomi.hardware.quickcamera.IQuickCameraService/default
+# avc: denied { add } ... name=vendor.xiaomi.hardware.aidl.intentaware.IIntentAwareService/default
+# all scontext=mtk_hal_camera tcontext=default_android_service (no label).
+# mtk_hal_camera add (+find, mirrors stock server side); platform_app/priv_app
+# find mirrors the stock client sets for the camera-relevant identities
+# (system_server/system_app finds omitted - unobserved, and vendor policy
+# granting system domains risks neverallows).
+# Xiaomi misys/hypsys AIDL service (vendor.xiaomi.hardware.misys.common
+# .IMiSysImpl, IHypSysSsi), served by /vendor/bin/hypsys_vendor in the
+# hal_hypsys_vendor domain, labeled hal_hypsys_vendor_service in
+# device/xiaomi/dash/sepolicy/vendor/service_contexts. Source set is the same
+# explicit platform-signed app set as above (hal_service_type exempts it from
+# domain.te:946, but the zygote/init/isolated neverallows still apply).
+allow { platform_app_36 priv_app_36 system_app } hal_hypsys_vendor_service:service_manager find;
+
+# BGServiceClient (com.android.camera) calls camerahalserver's binder
+# directly. The base platform_app/priv_app get this from the camera client
+# attribute, which the per-targetSdk types are not members of - observed:
+#   avc: denied { call } scontext=platform_app_36 tcontext=mtk_hal_camera
+#   tclass=binder permissive=0 app=com.android.camera
+binder_call(platform_app_36, mtk_hal_camera)
+binder_call(priv_app_36, mtk_hal_camera)
+# The macro only lets the server reply (transfer), never call back into the
+# client - observed HAL->app callback denial (BGServiceClient path):
+#   avc: denied { call } scontext=mtk_hal_camera tcontext=platform_app_36
+#   tclass=binder permissive=0 (3x per camera session)
+# Mirrors the explicit base-app grants above (call transfer both ways);
+# neverallow-clean (no appdomain binder-call neverallows in plat policy).
+allow mtk_hal_camera { platform_app_36 priv_app_36 }:binder call;
+
+allow mtk_hal_camera hal_mivimessage_service:service_manager { add find };
+allow priv_app hal_mivimessage_service:service_manager find;
+allow platform_app hal_mivimessage_service:service_manager find;
+allow { platform_app_36 priv_app_36 system_app } hal_mivimessage_service:service_manager find;
+allow mtk_hal_camera hal_quickcamera_service:service_manager { add find };
+allow priv_app hal_quickcamera_service:service_manager find;
+allow platform_app hal_quickcamera_service:service_manager find;
+allow mtk_hal_camera aidlintentaware_service:service_manager { add find };
+allow priv_app aidlintentaware_service:service_manager find;
+allow platform_app aidlintentaware_service:service_manager find;
+
+# MIVI resources in /data/vendor/camera (LUT filter cubes, watermark layout
+# jsons): the app writes them itself (MCAM_MIVILutSaver / sendJsonToMivi -
+# "Failed to write Lut to persist dir" without this) and mtk_hal_camera reads
+# them for CubeLutEffect/watermark rendering. Stock MiuiCamera is a system-uid
+# app; the ported app is a normal-uid platform app, so besides the DAC chmod
+# 0777 in init.mt6991.rc it needs SELinux write on the labeled dir.
+allow mtk_hal_camera vendor_camera_data_file:dir create_dir_perms;
+allow mtk_hal_camera vendor_camera_data_file:file create_file_perms;
+# The HAL keeps its IPC socket (ec_op_server_socket) inside this dir; the
+# unlink denial left a stale socket behind and broke the storage proxy path
+# (DsacProxy::getBuffer null-deref crash in camerahalserver).
+allow mtk_hal_camera vendor_camera_data_file:sock_file { create unlink link setattr };
+allow { platform_app platform_app_36 priv_app priv_app_36 system_app } vendor_camera_data_file:dir create_dir_perms;
+allow { platform_app platform_app_36 priv_app priv_app_36 system_app } vendor_camera_data_file:file create_file_perms;

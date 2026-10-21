@@ -1,0 +1,4 @@
+type hal_mivimessage_service, service_manager_type;
+type hal_quickcamera_service, service_manager_type;
+type aidlintentaware_service, service_manager_type;
+type xiaomi_mivi_service, service_manager_type;

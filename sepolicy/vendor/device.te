@@ -1,0 +1,2 @@
+type blackbox_block_device, dev_type;
+type io_monitor_device, dev_type;

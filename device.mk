@@ -5,7 +5,7 @@
 #
 
 # Inherit from the proprietary version
-$(call inherit-product, vendor/xiaomi/onyx-miuicamera/onyx-miuicamera-vendor.mk)
+$(call inherit-product, vendor/xiaomi/dash-miuicamera/dash-miuicamera-vendor.mk)
 
 # Camera
 $(call soong_config_set_bool,camera,override_format_from_reserved,true)
@@ -13,6 +13,10 @@ $(call soong_config_set_bool,camera,override_format_from_reserved,true)
 # Public libraries
 PRODUCT_COPY_FILES += \
     $(LOCAL_PATH)/configs/public.libraries-xiaomi.txt:$(TARGET_COPY_OUT_SYSTEM)/etc/public.libraries-xiaomi.txt
+
+# Overlays
+PRODUCT_PACKAGES += \
+    MiuiCameraOverlay
 
 # Priv-app permission
 PRODUCT_COPY_FILES += \
